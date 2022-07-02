@@ -17,7 +17,6 @@ pub struct ProcessControlBlock {
     inner: UPSafeCell<ProcessControlBlockInner>,
 }
 
-// LAB5 HINT: you may add data structures for deadlock detection here
 pub struct ProcessControlBlockInner {
     pub is_zombie: bool,
     pub memory_set: MemorySet,
@@ -28,8 +27,14 @@ pub struct ProcessControlBlockInner {
     pub tasks: Vec<Option<Arc<TaskControlBlock>>>,
     pub task_res_allocator: RecycleAllocator,
     pub mutex_list: Vec<Option<Arc<dyn Mutex>>>,
+    pub mutex_alloc: Vec<Option<usize>>,   // [mutex_id] -> tid
+    pub mutex_request: Vec<Option<usize>>, // [tid] -> mutex_id
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
+    pub sem_avail: Vec<usize>,           // [mid] -> num
+    pub sem_alloc: Vec<Vec<usize>>,      // [tid] -> {sid, num}
+    pub sem_request: Vec<Option<usize>>, // [tid] -> sid
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    pub deadlock_det_enabled: bool,
 }
 
 impl ProcessControlBlockInner {
@@ -69,7 +74,6 @@ impl ProcessControlBlock {
         self.inner.exclusive_access()
     }
 
-    // LAB5 HINT: How to initialize deadlock data structures?
     pub fn new(elf_data: &[u8]) -> Arc<Self> {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, ustack_base, entry_point) = MemorySet::from_elf(elf_data);
@@ -95,8 +99,14 @@ impl ProcessControlBlock {
                     tasks: Vec::new(),
                     task_res_allocator: RecycleAllocator::new(),
                     mutex_list: Vec::new(),
+                    mutex_alloc: Vec::new(),
+                    mutex_request: Vec::new(),
                     semaphore_list: Vec::new(),
+                    sem_avail: Vec::new(),
+                    sem_alloc: Vec::new(),
+                    sem_request: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_det_enabled: false,
                 })
             },
         });
@@ -122,13 +132,15 @@ impl ProcessControlBlock {
         // add main thread to the process
         let mut process_inner = process.inner_exclusive_access();
         process_inner.tasks.push(Some(Arc::clone(&task)));
+        process_inner.mutex_request.push(None);
+        process_inner.sem_request.push(None);
+        process_inner.sem_alloc.push(Vec::new());
         drop(process_inner);
         // add main thread to scheduler
         add_task(task);
         process
     }
 
-    // LAB5 HINT: How to initialize deadlock data structures?
     /// Load a new elf to replace the original application address space and start execution
     /// Only support processes with a single thread.
     pub fn exec(self: &Arc<Self>, elf_data: &[u8], args: Vec<String>) {
@@ -183,7 +195,6 @@ impl ProcessControlBlock {
         *task_inner.get_trap_cx() = trap_cx;
     }
 
-    // LAB5 HINT: How to initialize deadlock data structures?
     /// Fork from parent to child
     /// Only support processes with a single thread.
     pub fn fork(self: &Arc<Self>) -> Arc<Self> {
@@ -216,8 +227,14 @@ impl ProcessControlBlock {
                     tasks: Vec::new(),
                     task_res_allocator: RecycleAllocator::new(),
                     mutex_list: Vec::new(),
+                    mutex_alloc: Vec::new(),
+                    mutex_request: Vec::new(),
                     semaphore_list: Vec::new(),
+                    sem_avail: Vec::new(),
+                    sem_alloc: Vec::new(),
+                    sem_request: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_det_enabled: false,
                 })
             },
         });
@@ -240,6 +257,9 @@ impl ProcessControlBlock {
         // attach task to child process
         let mut child_inner = child.inner_exclusive_access();
         child_inner.tasks.push(Some(Arc::clone(&task)));
+        child_inner.mutex_request.push(None);
+        child_inner.sem_request.push(None);
+        child_inner.sem_alloc.push(Vec::new());
         drop(child_inner);
         // modify kernel_stack_top in trap_cx of this thread
         let task_inner = task.inner_exclusive_access();
@@ -270,8 +290,14 @@ impl ProcessControlBlock {
                     tasks: Vec::new(),
                     task_res_allocator: RecycleAllocator::new(),
                     mutex_list: Vec::new(),
+                    mutex_request: Vec::new(),
+                    mutex_alloc: Vec::new(),
                     semaphore_list: Vec::new(),
+                    sem_avail: Vec::new(),
+                    sem_alloc: Vec::new(),
+                    sem_request: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_det_enabled: false,
                 })
             },
         });

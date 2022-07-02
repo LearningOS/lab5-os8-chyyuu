@@ -3,7 +3,7 @@ use crate::{
     task::{add_task, current_task, TaskControlBlock},
     trap::{trap_handler, TrapContext},
 };
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     let task = current_task().unwrap();
@@ -21,6 +21,20 @@ pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     let new_task_inner = new_task.inner_exclusive_access();
     let new_task_res = new_task_inner.res.as_ref().unwrap();
     let new_task_tid = new_task_res.tid;
+    let mut process_inner = process.inner_exclusive_access();
+    // add new thread to current process
+    while process_inner.tasks.len() < new_task_tid + 1 {
+        process_inner.tasks.push(None);
+        process_inner.mutex_request.push(None);
+        process_inner.sem_alloc.push(Vec::new());
+        process_inner.sem_request.push(None);
+    }
+    process_inner.tasks[new_task_tid] = Some(Arc::clone(&new_task));
+    process_inner.mutex_request[new_task_tid] = None;
+    process_inner.sem_alloc[new_task_tid] = Vec::new();
+    let sem_len = process_inner.sem_alloc[0].len();
+    process_inner.sem_alloc[new_task_tid].resize(sem_len, 0);
+    process_inner.sem_request[new_task_tid] = None;
     let new_task_trap_cx = new_task_inner.get_trap_cx();
     *new_task_trap_cx = TrapContext::app_init_context(
         entry,
@@ -31,7 +45,6 @@ pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     );
     (*new_task_trap_cx).x[10] = arg;
 
-    let mut process_inner = process.inner_exclusive_access();
     // add new thread to current process
     let tasks = &mut process_inner.tasks;
     while tasks.len() < new_task_tid + 1 {
@@ -40,6 +53,7 @@ pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     tasks[new_task_tid] = Some(Arc::clone(&new_task));
     // add new task to scheduler
     add_task(Arc::clone(&new_task));
+    debug!("P {} thread create {}", process.pid.0, new_task_tid);
     new_task_tid as isize
 }
 
